@@ -1,7 +1,7 @@
 #lang racket
 
-(require (for-syntax syntax/parse racket/syntax)
-         (require racket/generator))
+(require (for-syntax syntax/parse racket/syntax racket/generator)
+         racket/generator)
 
 (define octave (make-parameter 0))
 (define voice (make-parameter 0))
@@ -13,6 +13,17 @@
   (let ((real-note (+ midi-num (* 12 (octave)))))
     (displayln (format "Playing note ~a, duration: ~a, octave: ~a, voice: ~a"
                        real-note duration (octave) (voice)))))
+
+(define (generator-append . seqs)
+  (define (yieldall gen)
+    (let recur ()
+      (let ((out (gen)))
+        (when (not (void? out))
+          (yield out)
+          (recur)))))
+  (generator ()
+             (for ((seq seqs))
+               (yieldall seq))))
 
 (define-for-syntax (make-note-symbol s1 s2)
   (string->symbol
@@ -32,10 +43,11 @@
                                        (make-note-symbol note-base duration))))
                          #`(begin
                              (define note-id
-                               (stream
-                                (thunk (play-note
-                                        midi-base
-                                        #,(string->number real-duration)))))
+                               (sequence->generator
+                                (list
+                                 (thunk (play-note
+                                         midi-base
+                                         #,(string->number real-duration))))))
                              (provide note-id)))))
                    '("" "2" "4" "8" "16" "32"))))
        #`(begin
@@ -45,15 +57,14 @@
   (syntax-parser
     ((_ name seq ...)
      #`(define (name)
-         (stream-append seq ...)))))
+         (generator-append seq ...)))))
 
 (define (loop num . seqs)
-  (let ((bigseq (apply stream-append seqs)))
+  (let ((bigseq (apply generator-append seqs)))
     (cond
-      ((positive? num) (apply stream-append (repeat num bigseq)))
+      ((positive? num) (apply generator-append (repeat num bigseq)))
       ((zero? num)
-       (letrec ((infiseq (stream-append bigseq infiseq)))
-         infiseq)))))
+       ))))
 
 (define-note-divisions g# 32)
 (define-note-divisions g 31)
