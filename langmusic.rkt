@@ -2,8 +2,21 @@
 
 (require (for-syntax syntax/parse racket/syntax))
 
-(define octave (make-parameter 0))
-(define voice (make-parameter 0))
+;; Some structures:
+#|
+
+|#
+
+;; You can fit 8 32nd notes in a quarter note.
+(define +ticks-per-quarter+ 8)
+
+(define *octave* (make-parameter 0))
+(define *voice* (make-parameter 0))
+
+;; The ticker returns the number of ticks to wait until the next note.
+(define *ticker* (make-parameter identity))
+
+(define funcall (curryr apply empty))
 
 (define (repeat num ls)
   (build-list num (const ls)))
@@ -16,13 +29,13 @@
 
 (define (stream-take $ n)
   (cond
-    ((zero? n) empty-stream)
+    ((zero? n) '())
     (else (cons (stream-first $) (stream-take (stream-rest $) (sub1 n))))))
 
-(define (play-note midi-num duration)
-  (let ((real-note (+ midi-num (* 12 (octave)))))
+(define (note-on midi-num duration)
+  (let ((real-note (+ midi-num (* 12 (*octave*)))))
     (displayln (format "Playing note ~a, duration: ~a, octave: ~a, voice: ~a"
-                       real-note duration (octave) (voice)))))
+                       real-note duration (*octave*) (*voice*)))))
 
 (define-syntax punk
   (syntax-parser
@@ -30,6 +43,14 @@
      #'(thunk
         (parameterize ((id val) ...)
           code ...)))))
+
+(define-syntax phunk
+  (syntax-parser
+    ((_ (id val) ...)
+     #'(lambda (thk)
+         (thunk
+          (parameterize ((id val) ...)
+            (thk)))))))
 
 (define-for-syntax (make-note-symbol s1 s2)
   (string->symbol
@@ -49,7 +70,7 @@
                                        (make-note-symbol note-base duration))))
                          #`(begin
                              (define note-id
-                               (stream (thunk (play-note
+                               (stream (thunk (note-on
                                                 midi-base
                                                 #,(string->number real-duration)))))
                              (provide note-id)))))
@@ -81,11 +102,21 @@
   (let ((bigseq (apply stream-append seqs)))
     (stream-map identity bigseq)))
 
-(define (together . seqs)
-  (displayln "Somehow combine them"))
+(define-syntax together
+  (syntax-parser
+    ((_ seq ...)
+     (let* ((seqs (syntax->list #'(seq ...)))
+            (syms (build-list (length seqs) (lambda _ (datum->syntax #'here (gensym)))))
+            (pairs (map (lambda (seq sym) #`(#,sym #,seq)) seqs syms)))
+       #`(for/stream #,(datum->syntax #'here pairs)
+                     (list #,@syms))))))
 
 (define (play . seqs)
-  (displayln "Playin those seqs baby"))
+  (let ((bigseq (apply stream-append seqs)))
+    (for ((note bigseq))
+      (cond
+        ((list? note) (for-each funcall note))
+        (else (note))))))
 
 (define-note-divisions g# 32)
 (define-note-divisions g 31)
