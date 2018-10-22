@@ -74,6 +74,13 @@
        #`(begin
            #,@defs)))))
 
+(define-syntax defun
+  (syntax-parser
+    ((_ name (id ...) code ...)
+     #'(define (name id ...)
+         (let* ((seqs (begin code ...)))
+           (apply append$ seqs))))))
+
 (define-syntax defseq
   (syntax-parser
     ((_ name seq ...)
@@ -86,6 +93,9 @@
       ((zero? num) (infinitize bigseq))
       ((positive? num) (apply append$ (repeat num bigseq)))
       (else (error "Can't loop with a negative number!")))))
+
+(define (play . seqs)
+  (displayln "Playin those seqs baby"))
 
 (define-note-divisions g# 32)
 (define-note-divisions g 31)
@@ -100,4 +110,21 @@
 (define-note-divisions a# 22)
 (define-note-divisions a 21)
 
-(defseq phrase1 a b c d e d# g)
+(defseq bassline
+  c d# f g)
+
+(defun random-phrase (num-notes)
+  (let* ((ls (list a b c d e f g))
+        (len (length ls)))
+    (build-list num-notes (λ _ (list-ref ls (random len))))))
+
+(defseq phrase1
+  c d e f g4 a16 b16 > (random-phrase) <)
+
+(play
+ (together
+  (loop 2 phrase1)
+  (loop 0 bassline))
+ (together
+  (loop 2 (octave+ 1 phrase1))
+  (loop 0 (octave+ 1 bassline))))
