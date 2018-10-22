@@ -32,6 +32,11 @@
       (else
        (cons$ (car$ $1) (append$ (cdr$ $1) $2)))))
   (foldr _append2$ empty$ strs))
+(define (map$ fun $)
+  (cond
+    ((empty$? $) empty$)
+    (else
+     (cons$ (fun (car$ $)) (map$ fun (cdr$ $))))))
 (define (take$ $ n)
   (cond
     ((zero? n) empty$)
@@ -94,6 +99,13 @@
       ((positive? num) (apply append$ (repeat num bigseq)))
       (else (error "Can't loop with a negative number!")))))
 
+(define (octave+ num . seqs)
+  (let ((bigseq (apply append$ seqs)))
+    (map$ identity bigseq)))
+
+(define (together . seqs)
+  (displayln "Somehow combine them"))
+
 (define (play . seqs)
   (displayln "Playin those seqs baby"))
 
@@ -110,6 +122,9 @@
 (define-note-divisions a# 22)
 (define-note-divisions a 21)
 
+(define > (stream$ (thunk (displayln "Bumping octave up"))))
+(define < (stream$ (thunk (displayln "Bumping octave down"))))
+
 (defseq bassline
   c d# f g)
 
@@ -119,7 +134,7 @@
     (build-list num-notes (λ _ (list-ref ls (random len))))))
 
 (defseq phrase1
-  c d e f g4 a16 b16 > (random-phrase) <)
+  c d e f g4 a16 b16 > (random-phrase 8) <)
 
 (play
  (together
