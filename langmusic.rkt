@@ -1,13 +1,41 @@
 #lang racket
 
 (require (for-syntax syntax/parse racket/syntax racket/generator)
-         racket/generator)
+         racket/generator
+         compatibility/defmacro)
 
 (define octave (make-parameter 0))
 (define voice (make-parameter 0))
 
 (define (repeat num ls)
   (build-list num (const ls)))
+
+;; We have to define our own custom stream functions because the built-in Racket ones are trash.
+(define empty$ null)
+(define empty$? null?)
+(define-syntax-rule (cons$ x y)
+  (cons x (thunk y)))
+(define car$ car)
+(define (cdr$ $)
+  (let ((x ((cdr $))))
+    (if (procedure? x) (x) x)))
+(define (append$* $1 $2)
+  (thunk
+    (let (($1 ($1))
+          ($2 ($2)))
+      (cond
+        ((empty$? $1) $2)
+        ((empty$? $2) $1)
+        (else
+         (cons$ (car$ $1) ((append$* (thunk (cdr$ $1)) (thunk $2)))))))))
+
+(define-syntax-rule (append$ $1 $2)
+  (let ()
+    (define x (append$* (thunk $1) (thunk $2)))
+    (x)))
+
+(define s1 (cons$ 1 (cons$ 2 null)))
+(define s2 (append$ s1 s2))
 
 (define (play-note midi-num duration)
   (let ((real-note (+ midi-num (* 12 (octave)))))
