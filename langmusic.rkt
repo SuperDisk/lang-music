@@ -22,7 +22,8 @@
 |#
 
 (require (for-syntax syntax/parse racket/syntax
-                     (only-in racket thunk*)))
+                     (only-in racket thunk*)
+                     (rename-in racket (> gt?) (< lt?) (>= gte?) (<= lte?))))
 
 ;; You can fit 8 32nd notes in a quarter note.
 (define +ticks-per-quarter+ 8)
@@ -103,14 +104,12 @@
 (define (note-on midi-num note-length)
   (let ((real-note (+ midi-num (* 12 (octave))))
         (duration (note-length->duration note-length)))
-    (displayln (format "Playing note ~a, duration: ~a, octave: ~a, voice: ~a"
-                       real-note duration (octave) (voice)))
-    (thunk
-     (format "Turning off note ~a, duration: ~a, octave: ~a, voice: ~a"
-             real-note duration (octave) (voice)))))
+    (displayln (format "Playing note ~a, duration: ~a, octave: ~a, voice: ~a" real-note duration (octave) (voice)))
+    duration))
 
-(define (rest-on _ duration)
-  (displayln "Resting"))
+(define (rest-on _ note-length)
+  (displayln "Resting")
+  (note-length->duration note-length))
 
 (define-syntax punk
   (syntax-parser
@@ -149,9 +148,10 @@
                                        (make-note-symbol note-base duration))))
                          #`(begin
                              (define note-id
+                               ;; Holy wrappers, batman
                                (stream (thunk (func
-                                                midi-base
-                                                #,real-duration))))
+                                               midi-base
+                                               #,real-duration))))
                              (provide note-id)))))
                    '("" "2" "4" "8" "16" "32" "." "2." "4." "8." "16." "32."))))
        #`(begin
@@ -210,13 +210,42 @@
        #`(for/stream #,(datum->syntax #'here pairs)
                      (list #,@syms))))))
 
+;; Channel can range from 0 to 15 (0xf)
 (define (play . seqs)
+  ;; Decrements the cdr of a schedule entry
+  (define (update-entry ent)
+    (cons (car ent) (sub1 (cdr ent))))
+  ;; True when the entry is ready to be noted-off
+  (define (entry-ready? ent)
+    (zero? (cdr ent)))
   (let ((bigseq (apply stream-append seqs)))
-    (for ((note bigseq))
+    (let recur (($ bigseq)
+                (channel 0)
+                (schedule empty))
       (cond
-        ((list? note) (for-each funcall note))
-        (else (note))))))
-
+        ((stream-empty? $)
+         ;; Emit a midi conclusion segment or something?
+         )
+        ((empty? schedule)
+         ;; Time to grab and play some new notes.
+         (let* ((notes (stream-first $))
+                (notes (if (list? notes) notes (list notes)))
+                (new-schedule (for/list ((note notes)
+                                         (chan (in-naturals channel)))
+                                ;; Conses together the note's duration,
+                                ;; which it always returns, and the channel
+                                ;; on which it was played. Wrap around at 16
+                                (cons (note) (modulo chan 16)))))
+           (define latest-channel (modulo (+ channel (length new-schedule)) 16))
+           (recur (stream-rest $) latest-channel new-schedule)))
+        (else
+         ;; We have to clear the schedule out first.
+         (define-values (ready next-schedule) (partition entry-ready? schedule))
+         (for ((entry ready))
+           (displayln "note off event.")
+           ;; Issue a note off event.
+           )
+         (recur $ channel (map update-entry next-schedule)))))))
 
 (define > (stream (thunk (displayln "Bumping octave up"))))
 (define < (stream (thunk (displayln "Bumping octave down"))))
@@ -232,10 +261,12 @@
 (defseq phrase1
   c4 b4)
 
-(play
- (together
-  (loop 2 phrase1)
-  (loop 0 bassline))
- (together
-  (loop 2 (octave+ 1 phrase1))
-  (loop 0 (octave+ 1 bassline))))
+(define doplay
+  (thunk
+   (play
+    (together
+     (loop 2 phrase1)
+     (loop 0 bassline))
+    (together
+     (loop 2 (octave+ 1 phrase1))
+     (loop 0 (octave+ 1 bassline))))))
