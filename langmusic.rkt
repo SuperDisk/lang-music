@@ -148,7 +148,6 @@
                                        (make-note-symbol note-base duration))))
                          #`(begin
                              (define note-id
-                               ;; Holy wrappers, batman
                                (stream (thunk (func
                                                midi-base
                                                #,real-duration))))
@@ -214,16 +213,16 @@
 (define (play . seqs)
   ;; Decrements the cdr of a schedule entry
   (define (update-entry ent)
-    (cons (car ent) (sub1 (cdr ent))))
+    (cons (sub1 (car ent)) (cdr ent)))
   ;; True when the entry is ready to be noted-off
   (define (entry-ready? ent)
-    (zero? (cdr ent)))
+    (zero? (car ent)))
   (let ((bigseq (apply stream-append seqs)))
     (let recur (($ bigseq)
                 (channel 0)
                 (schedule empty))
       (cond
-        ((stream-empty? $)
+        ((and (stream-empty? $) (empty? schedule))
          ;; Emit a midi conclusion segment or something?
          )
         ((empty? schedule)
@@ -232,17 +231,16 @@
                 (notes (if (list? notes) notes (list notes)))
                 (new-schedule (for/list ((note notes)
                                          (chan (in-naturals channel)))
-                                ;; Conses together the note's duration,
-                                ;; which it always returns, and the channel
-                                ;; on which it was played. Wrap around at 16
+                                (displayln (modulo chan 16))
                                 (cons (note) (modulo chan 16)))))
            (define latest-channel (modulo (+ channel (length new-schedule)) 16))
            (recur (stream-rest $) latest-channel new-schedule)))
         (else
          ;; We have to clear the schedule out first.
          (define-values (ready next-schedule) (partition entry-ready? schedule))
+         (when (not (empty? ready)) (displayln ready))
          (for ((entry ready))
-           (displayln "note off event.")
+           (displayln (format "note off event for channel ~a" (cdr entry)))
            ;; Issue a note off event.
            )
          (recur $ channel (map update-entry next-schedule)))))))
@@ -262,6 +260,13 @@
   c4 b4)
 
 (define doplay
+  (thunk
+   (play
+    (together
+     (seq a b c)
+     (seq d2 e2 f2)))))
+
+#;(define doplay
   (thunk
    (play
     (together
