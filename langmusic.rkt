@@ -1,24 +1,24 @@
 #lang racket
 
 #|
-
-   Nick Faro and Michael Gunantra Present:
-                                                                             ;;
-    ;; ;;  ;;;;                                    ;;   ;;                   ;;
-    ;; ;;    ;;                                    ;;   ;;
-   ;;;;;;;   ;;     ;;;;   ;;;;;    ;;;;;          ;;; ;;; ;;  ;;   ;;;;;  ;;;;     ;;;;
-    ;; ;;    ;;        ;;  ;;  ;;  ;;  ;;          ;; ; ;; ;;  ;;  ;;        ;;    ;;  ;;
-    ;; ;;    ;;        ;;  ;;  ;;  ;;  ;;          ;; ; ;; ;;  ;;  ;;        ;;    ;;
-    ;; ;;    ;;     ;;;;;  ;;  ;;  ;;  ;;          ;; ; ;; ;;  ;;   ;;;;     ;;    ;;
-   ;;;;;;;   ;;    ;;  ;;  ;;  ;;  ;;  ;;          ;;   ;; ;;  ;;      ;;    ;;    ;;
-    ;; ;;    ;;    ;;  ;;  ;;  ;;  ;;  ;;          ;;   ;; ;;  ;;      ;;    ;;    ;;  ;;
-    ;; ;;  ;;;;;;   ;;;;;  ;;  ;;   ;;;;;          ;;   ;;  ;;;;;  ;;;;;   ;;;;;;   ;;;;
-                                       ;;
-                                       ;;
-                                   ;;;;;
-
-   It's fun, it's easy, it's free
-
+.
+. Nick Faro and Michael Gunantra Present:
+.                                                                             $$
+.    $$ $$  $$$$                                                              $$
+.    $$ $$    $$
+.   $$$$$$$   $$     $$$$   $$$$$    $$$$$          $$$$$$  $$  $$   $$$$$  $$$$     $$$$
+.    $$ $$    $$        $$  $$  $$  $$  $$          $$ $ $$ $$  $$  $$        $$    $$  $$
+.    $$ $$    $$        $$  $$  $$  $$  $$          $$ $ $$ $$  $$  $$        $$    $$
+.    $$ $$    $$     $$$$$  $$  $$  $$  $$          $$ $ $$ $$  $$   $$$$     $$    $$
+.   $$$$$$$   $$    $$  $$  $$  $$  $$  $$          $$ $ $$ $$  $$      $$    $$    $$
+.    $$ $$    $$    $$  $$  $$  $$  $$  $$          $$ $ $$ $$  $$      $$    $$    $$  $$
+.    $$ $$  $$$$$$   $$$$$  $$  $$   $$$$$          $$   $$  $$$$$  $$$$$   $$$$$$   $$$$
+.                                       $$
+.                                       $$
+.                                   $$$$$
+.
+.    It's fun, it's easy, it's free
+.
 |#
 
 (require (for-syntax syntax/parse racket/syntax
@@ -200,6 +200,7 @@
   (let ((bigseq (apply stream-append seqs)))
     (stream-map identity bigseq)))
 
+#;
 (define-syntax together
   (syntax-parser
     ((_ seq ...)
@@ -209,7 +210,121 @@
        #`(for/stream #,(datum->syntax #'here pairs)
                      (list #,@syms))))))
 
+;; simple...
+(define (together . seqs)
+  (stream seqs))
+
+;; Coroutine stuff
+(define (current-continuation)
+  (call-with-current-continuation
+   (lambda (cc)
+     (cc cc))))
+
+(define-syntax swap!
+  (syntax-parser
+    ((_ x:id y)
+     #'(let ((z (y x)))
+         (set! x z)
+         z))))
+
+(define (play . seqs)
+  ;; The current channel
+  (define channel 0)
+  (define (update-channel c)
+    (modulo (add1 c) 16))
+
+  ;; The large sequence
+  (define bigseq (apply stream-append seqs))
+
+  (define (update-current-note cn)
+    (cons (sub1 (car cn)) (cdr cn)))
+
+  (define (note-done? n)
+    (= (car n) 0))
+
+  ;; Coroutine queue
+  (define thread-queue empty)
+  (define halt #f)
+
+  (define (spawn thunk)
+    (let ((cc (current-continuation)))
+      (if (procedure? cc)
+          (set! thread-queue (append thread-queue (list cc)))
+          (begin (thunk)
+                 (quit)))))
+
+  (define (yield)
+    (let ((cc (current-continuation)))
+      (if (and (procedure? cc) (pair? thread-queue))
+          (let ((next-thread (car thread-queue)))
+            (set! thread-queue (append (cdr thread-queue) (list cc)))
+            (next-thread 'resume))
+          (void))))
+
+  (define (quit)
+    (if (pair? thread-queue)
+        (let ((next-thread (car thread-queue)))
+          (set! thread-queue (cdr thread-queue))
+          (next-thread 'resume))
+        (halt)))
+
+  (define (start-threads)
+    (let ((cc (current-continuation)))
+      (if cc
+          (begin
+            (set! halt (lambda () (cc #f)))
+            (if (null? thread-queue)
+                (void)
+                (begin
+                  (let ((next-thread (car thread-queue)))
+                    (set! thread-queue (cdr thread-queue))
+                    (next-thread 'resume)))))
+          (void))))
+
+  (define (thread $ current-note)
+    (let recur (($ $) (current-note current-note))
+      (cond
+        ((and (stream-empty? $) (null? current-note))
+         (quit))
+        ((null? current-note)
+         ;; Process a new note
+         (let ((note (stream-first $)))
+           (cond
+             ((list? note)
+              ;; Spin up some subthreads for each substream
+              (for ((sub$ note))
+                (spawn (thunk (thread sub$ null))))
+              (yield)
+              ;; An extremely poor-man's version of a thread join.
+              ;; Basically waits for the spawned threads to die
+              ;; before continuing.
+              ;; TODO: insert join
+              (recur (stream-rest $) null))
+             ((procedure? note)
+              ;; Play the note and start counting down until it dies
+              (let ((dur (note))
+                    (chn (swap! channel update-channel)))
+                (yield)
+                (recur (stream-rest $) (cons dur chn))))
+             (else (error (format "Got an invalid note! ~a" note))))))
+        ;; Decrement current note and yield
+        (else
+         (cond
+           ((note-done? current-note)
+            (displayln (format "Note off... ~a ~a"
+                               (car current-note)
+                               (cdr current-note)))
+            (recur $ null))
+           (else
+            (yield)
+            (recur $ (update-current-note current-note))))))))
+
+  ;;Spawn a thread with bigseq, null
+  (spawn (thunk (thread bigseq null)))
+  (start-threads))
+
 ;; Channel can range from 0 to 15 (0xf)
+#;
 (define (play . seqs)
   ;; Decrements the cdr of a schedule entry
   (define (update-entry ent)
@@ -253,7 +368,7 @@
 
 (defun random-phrase (num-notes)
   (let* ((ls (list a b c d e f g))
-        (len (length ls)))
+         (len (length ls)))
     (build-list num-notes (thunk* (list-ref ls (random len))))))
 
 (defseq phrase1
@@ -267,11 +382,11 @@
      (seq d2 e2 f2)))))
 
 #;(define doplay
-  (thunk
-   (play
-    (together
-     (loop 2 phrase1)
-     (loop 0 bassline))
-    (together
-     (loop 2 (octave+ 1 phrase1))
-     (loop 0 (octave+ 1 bassline))))))
+    (thunk
+     (play
+      (together
+       (loop 2 phrase1)
+       (loop 0 bassline))
+      (together
+       (loop 2 (octave+ 1 phrase1))
+       (loop 0 (octave+ 1 bassline))))))
