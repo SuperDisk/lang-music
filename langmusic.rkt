@@ -22,8 +22,8 @@
 |#
 
 (require (for-syntax syntax/parse racket/syntax
-                     (only-in racket thunk*)
-                     (rename-in racket (> gt?) (< lt?) (>= gte?) (<= lte?))))
+                     (only-in racket thunk*))
+         (rename-in racket (> gt?) (< lt?) (>= gte?) (<= lte?)))
 
 ;; You can fit 8 32nd notes in a quarter note.
 (define +ticks-per-quarter+ 8)
@@ -49,9 +49,7 @@
                      ("2." .  ,(dot +half+))
                      ("4." .  ,(dot +quarter+))
                      ("8." .   ,(dot +eighth+))
-                     ("16." .  ,(dot +sixteenth+))
-                     ;; we don't have dotted 32nd notes.
-                     ))))
+                     ("16." .  ,(dot +sixteenth+))))))
 
 (define *octave* (make-parameter #f))
 (define *voice* (make-parameter #f))
@@ -67,14 +65,21 @@
   (let ((o (*voice*)))
     (if (not o) 0 o)))
 
+(define-syntax while
+  (syntax-parser
+    ((_ cnd body ...)
+     #'(let recur ()
+         (when cnd
+           body ...
+           (recur))))))
+
 (define-syntax maybe-parameterize
   (syntax-parser
     ((_ (id val) code ...)
-     #'(if (false? (id))
-           (parameterize ((id val))
-             code ...)
-           (begin
-             code ...)))))
+     #'(let ((c (thunk code ...)))
+         (if (false? (id))
+             (parameterize ((id val)) (c))
+             (c))))))
 
 (define funcall (curryr apply empty))
 
@@ -200,16 +205,6 @@
   (let ((bigseq (apply stream-append seqs)))
     (stream-map identity bigseq)))
 
-#;
-(define-syntax together
-  (syntax-parser
-    ((_ seq ...)
-     (let* ((seqs (syntax->list #'(seq ...)))
-            (syms (build-list (length seqs) (thunk* (datum->syntax #'here (gensym)))))
-            (pairs (map (lambda (seq sym) #`(#,sym #,seq)) seqs syms)))
-       #`(for/stream #,(datum->syntax #'here pairs)
-                     (list #,@syms))))))
-
 ;; simple...
 (define (together . seqs)
   (stream seqs))
@@ -222,8 +217,8 @@
 
 (define-syntax swap!
   (syntax-parser
-    ((_ x:id y)
-     #'(let ((z (y x)))
+    ((_ x:id func args ...)
+     #'(let ((z (func x args ...)))
          (set! x z)
          z))))
 
@@ -243,30 +238,51 @@
     (= (car n) 0))
 
   ;; Coroutine queue
+  (define-struct coroutine (name k) #:transparent)
+  (define hitlist empty)
   (define thread-queue empty)
   (define halt #f)
 
+  (define (more-threads? tq)
+    (gt? (length tq) 1))
+
   (define (spawn thunk)
-    (let ((cc (current-continuation)))
+    (let ((cc (current-continuation))
+          (tname (gensym)))
       (if (procedure? cc)
-          (set! thread-queue (append thread-queue (list cc)))
+          (begin
+            (set! thread-queue (append thread-queue (list (coroutine tname cc))))
+            tname)
           (begin (thunk)
                  (quit)))))
 
   (define (yield)
     (let ((cc (current-continuation)))
-      (if (and (procedure? cc) (pair? thread-queue))
-          (let ((next-thread (car thread-queue)))
-            (set! thread-queue (append (cdr thread-queue) (list cc)))
-            (next-thread 'resume))
+      (if (and (procedure? cc) (more-threads? thread-queue))
+          (let ((me (car thread-queue))
+                (next-thread (cadr thread-queue)))
+            (set! thread-queue (append (cdr thread-queue) (list (make-coroutine (coroutine-name me) cc))))
+            ((coroutine-k next-thread) 'resume))
           (void))))
 
   (define (quit)
-    (if (pair? thread-queue)
-        (let ((next-thread (car thread-queue)))
+    (if (more-threads? thread-queue)
+        (let ((me (car thread-queue))
+              (next-thread (cadr thread-queue)))
+          (set! hitlist (remove (coroutine-name me) hitlist symbol=?))
           (set! thread-queue (cdr thread-queue))
-          (next-thread 'resume))
+          ((coroutine-k next-thread) 'resume))
         (halt)))
+
+  (define (kill . names)
+    (set! thread-queue
+            (filter (lambda (cor)
+                      (not (member (coroutine-name cor) names symbol=?)))
+                    thread-queue)))
+
+  ;; Gracefully ask a thread to die by adding its name to the hitlist
+  (define (ask-to-die . names)
+    (swap! hitlist append names))
 
   (define (start-threads)
     (let ((cc (current-continuation)))
@@ -277,14 +293,19 @@
                 (void)
                 (begin
                   (let ((next-thread (car thread-queue)))
-                    (set! thread-queue (cdr thread-queue))
-                    (next-thread 'resume)))))
+                    #;(set! thread-queue (cdr thread-queue))
+                    ((coroutine-k next-thread) 'resume)))))
           (void))))
 
   (define (thread $ current-note)
     (let recur (($ $) (current-note current-note))
       (cond
-        ((and (stream-empty? $) (null? current-note))
+        ((and (or
+               (member (coroutine-name (car thread-queue)) hitlist symbol=?)
+               (stream-empty? $))
+              (null? current-note))
+         ;; If we need to die and we're ready to consume a new note, then die.
+         ;; Or, if our stream is empty and we're ready to consume a new note, die.
          (quit))
         ((null? current-note)
          ;; Process a new note
@@ -292,13 +313,27 @@
            (cond
              ((list? note)
               ;; Spin up some subthreads for each substream
-              (for ((sub$ note))
-                (spawn (thunk (thread sub$ null))))
-              (yield)
+              (define subthreads
+                (for/list ((sub$ note))
+                  (spawn (thunk (thread sub$ null)))))
               ;; An extremely poor-man's version of a thread join.
-              ;; Basically waits for the spawned threads to die
-              ;; before continuing.
-              ;; TODO: insert join
+              (define (alive? tname)
+                (member tname thread-queue
+                        (lambda (n t) (equal? n (coroutine-name t)))))
+              (define (all-still-alive ls)
+                (andmap alive? ls))
+              (define (any-still-alive ls)
+                (ormap alive? ls))
+              ;; As long as all of the subthreads are still alive,
+              ;; we just do nothing. If one dies we exit this loop.
+              (while (all-still-alive subthreads)
+                (yield))
+              ;; Kill all coroutines that we spawned if one dies.
+              (apply ask-to-die subthreads)
+              ;; We've asked all the threads to terminate, so once all note off
+              ;; events have been emitted, then we can exit this following loop.
+              (while (any-still-alive subthreads)
+                (yield))
               (recur (stream-rest $) null))
              ((procedure? note)
               ;; Play the note and start counting down until it dies
@@ -314,6 +349,7 @@
             (displayln (format "Note off... ~a ~a"
                                (car current-note)
                                (cdr current-note)))
+            (yield)
             (recur $ null))
            (else
             (yield)
@@ -322,43 +358,6 @@
   ;;Spawn a thread with bigseq, null
   (spawn (thunk (thread bigseq null)))
   (start-threads))
-
-;; Channel can range from 0 to 15 (0xf)
-#;
-(define (play . seqs)
-  ;; Decrements the cdr of a schedule entry
-  (define (update-entry ent)
-    (cons (sub1 (car ent)) (cdr ent)))
-  ;; True when the entry is ready to be noted-off
-  (define (entry-ready? ent)
-    (zero? (car ent)))
-  (let ((bigseq (apply stream-append seqs)))
-    (let recur (($ bigseq)
-                (channel 0)
-                (schedule empty))
-      (cond
-        ((and (stream-empty? $) (empty? schedule))
-         ;; Emit a midi conclusion segment or something?
-         )
-        ((empty? schedule)
-         ;; Time to grab and play some new notes.
-         (let* ((notes (stream-first $))
-                (notes (if (list? notes) notes (list notes)))
-                (new-schedule (for/list ((note notes)
-                                         (chan (in-naturals channel)))
-                                (displayln (modulo chan 16))
-                                (cons (note) (modulo chan 16)))))
-           (define latest-channel (modulo (+ channel (length new-schedule)) 16))
-           (recur (stream-rest $) latest-channel new-schedule)))
-        (else
-         ;; We have to clear the schedule out first.
-         (define-values (ready next-schedule) (partition entry-ready? schedule))
-         (when (not (empty? ready)) (displayln ready))
-         (for ((entry ready))
-           (displayln (format "note off event for channel ~a" (cdr entry)))
-           ;; Issue a note off event.
-           )
-         (recur $ channel (map update-entry next-schedule)))))))
 
 (define > (stream (thunk (displayln "Bumping octave up"))))
 (define < (stream (thunk (displayln "Bumping octave down"))))
@@ -374,14 +373,14 @@
 (defseq phrase1
   c4 b4)
 
-(define doplay
+#;(define doplay
   (thunk
    (play
     (together
      (seq a b c)
      (seq d2 e2 f2)))))
 
-#;(define doplay
+(define doplay
     (thunk
      (play
       (together
