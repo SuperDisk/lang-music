@@ -106,10 +106,11 @@
                     (func el)))
               seq))
 
-(define (note-on midi-num note-length)
+(define (note-on midi-num note-length channel)
   (let ((real-note (+ midi-num (* 12 (octave))))
         (duration (note-length->duration note-length)))
-    (displayln (format "Playing note ~a, duration: ~a, octave: ~a, voice: ~a" real-note duration (octave) (voice)))
+    (displayln (format "Playing note ~a, length: ~a, duration: ~a, octave: ~a, voice: ~a, channel: ~a"
+                       real-note note-length duration (octave) (voice) channel))
     duration))
 
 (define (rest-on _ note-length)
@@ -153,9 +154,9 @@
                                        (make-note-symbol note-base duration))))
                          #`(begin
                              (define note-id
-                               (stream (thunk (func
-                                               midi-base
-                                               #,real-duration))))
+                               (stream (curry func
+                                              midi-base
+                                              #,real-duration)))
                              (provide note-id)))))
                    '("" "2" "4" "8" "16" "32" "." "2." "4." "8." "16." "32."))))
        #`(begin
@@ -246,12 +247,16 @@
   (define (more-threads? tq)
     (gt? (length tq) 1))
 
-  (define (spawn thunk)
+  (define (spawn thunk #:pos (pos 'back))
     (let ((cc (current-continuation))
           (tname (gensym)))
       (if (procedure? cc)
           (begin
-            (set! thread-queue (append thread-queue (list (coroutine tname cc))))
+            (match pos
+              ('back (set! thread-queue (append thread-queue (list (coroutine tname cc)))))
+              ('front (set! thread-queue
+                            (cons (car thread-queue)
+                                  (cons (coroutine tname cc) (cdr thread-queue))))))
             tname)
           (begin (thunk)
                  (quit)))))
@@ -276,13 +281,13 @@
 
   (define (kill . names)
     (set! thread-queue
-            (filter (lambda (cor)
-                      (not (member (coroutine-name cor) names symbol=?)))
-                    thread-queue)))
+          (filter (lambda (cor)
+                    (not (member (coroutine-name cor) names symbol=?)))
+                  thread-queue)))
 
   ;; Gracefully ask a thread to die by adding its name to the hitlist
-  (define (ask-to-die . names)
-    (swap! hitlist append names))
+  (define (ask-to-die name)
+    (set! hitlist (cons name hitlist)))
 
   (define (start-threads)
     (let ((cc (current-continuation)))
@@ -315,30 +320,30 @@
               ;; Spin up some subthreads for each substream
               (define subthreads
                 (for/list ((sub$ note))
-                  (spawn (thunk (thread sub$ null)))))
+                  (spawn (thunk (thread sub$ null)) #:pos 'front)))
               ;; An extremely poor-man's version of a thread join.
               (define (alive? tname)
                 (member tname thread-queue
                         (lambda (n t) (equal? n (coroutine-name t)))))
-              (define (all-still-alive ls)
-                (andmap alive? ls))
-              (define (any-still-alive ls)
-                (ormap alive? ls))
+              (define (all-still-alive?)
+                (andmap alive? subthreads))
+              (define (any-still-alive?)
+                (ormap alive? subthreads))
               ;; As long as all of the subthreads are still alive,
               ;; we just do nothing. If one dies we exit this loop.
-              (while (all-still-alive subthreads)
+              (while (all-still-alive?)
                 (yield))
               ;; Kill all coroutines that we spawned if one dies.
-              (apply ask-to-die subthreads)
+              (for-each ask-to-die subthreads)
               ;; We've asked all the threads to terminate, so once all note off
               ;; events have been emitted, then we can exit this following loop.
-              (while (any-still-alive subthreads)
+              (while (any-still-alive?)
                 (yield))
               (recur (stream-rest $) null))
              ((procedure? note)
               ;; Play the note and start counting down until it dies
-              (let ((dur (note))
-                    (chn (swap! channel update-channel)))
+              (let* ((chn (swap! channel update-channel))
+                     (dur (note chn)))
                 (yield)
                 (recur (stream-rest $) (cons dur chn))))
              (else (error (format "Got an invalid note! ~a" note))))))
@@ -346,17 +351,26 @@
         (else
          (cond
            ((note-done? current-note)
-            (displayln (format "Note off... ~a ~a"
-                               (car current-note)
-                               (cdr current-note)))
-            (yield)
+            (displayln (format "Note off... ~a" (cdr current-note)))
             (recur $ null))
            (else
             (yield)
             (recur $ (update-current-note current-note))))))))
 
-  ;;Spawn a thread with bigseq, null
-  (spawn (thunk (thread bigseq null)))
+  ;;Spawn the root thread.
+  (define root (spawn (thunk (thread bigseq null))))
+  (define ticker
+    (spawn
+     (thunk
+      (define ft #t)
+      (while (member root thread-queue (lambda (n t) (equal? n (coroutine-name t))))
+        (if ft
+            (begin
+              (set! ft #f)
+              (yield))
+            (begin
+              (displayln "Tick.")
+              (yield)))))))
   (start-threads))
 
 (define > (stream (thunk (displayln "Bumping octave up"))))
@@ -373,19 +387,19 @@
 (defseq phrase1
   c4 b4)
 
-#;(define doplay
+(define doplay
   (thunk
    (play
     (together
-     (seq a b c)
-     (seq d2 e2 f2)))))
-
+     (seq b4 b4)
+     (seq a8 a8 a8 a8)))))
+#;
 (define doplay
-    (thunk
-     (play
-      (together
-       (loop 2 phrase1)
-       (loop 0 bassline))
-      (together
-       (loop 2 (octave+ 1 phrase1))
-       (loop 0 (octave+ 1 bassline))))))
+  (thunk
+   (play
+    (together
+     (loop 2 phrase1)
+     (loop 0 bassline))
+    (together
+     (loop 2 (octave+ 1 phrase1))
+     (loop 0 (octave+ 1 bassline))))))
