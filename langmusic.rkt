@@ -232,146 +232,31 @@
   ;; The large sequence
   (define bigseq (apply stream-append seqs))
 
-  (define (update-current-note cn)
-    (cons (sub1 (car cn)) (cdr cn)))
-
-  (define (note-done? n)
-    (= (car n) 0))
-
-  ;; Coroutine queue
-  (define-struct coroutine (name k) #:transparent)
-  (define hitlist empty)
-  (define thread-queue empty)
-  (define halt #f)
-
-  (define (more-threads? tq)
-    (gt? (length tq) 1))
-
-  (define (spawn thunk #:pos (pos 'back))
-    (let ((cc (current-continuation))
-          (tname (gensym)))
-      (if (procedure? cc)
-          (begin
-            (match pos
-              ('back (set! thread-queue (append thread-queue (list (coroutine tname cc)))))
-              ('front (set! thread-queue
-                            (cons (car thread-queue)
-                                  (cons (coroutine tname cc) (cdr thread-queue))))))
-            tname)
-          (begin (thunk)
-                 (quit)))))
-
-  (define (yield)
-    (let ((cc (current-continuation)))
-      (if (and (procedure? cc) (more-threads? thread-queue))
-          (let ((me (car thread-queue))
-                (next-thread (cadr thread-queue)))
-            (set! thread-queue (append (cdr thread-queue) (list (make-coroutine (coroutine-name me) cc))))
-            ((coroutine-k next-thread) 'resume))
-          (void))))
-
-  (define (quit)
-    (if (more-threads? thread-queue)
-        (let ((me (car thread-queue))
-              (next-thread (cadr thread-queue)))
-          (set! hitlist (remove (coroutine-name me) hitlist symbol=?))
-          (set! thread-queue (cdr thread-queue))
-          ((coroutine-k next-thread) 'resume))
-        (halt)))
-
-  (define (kill . names)
-    (set! thread-queue
-          (filter (lambda (cor)
-                    (not (member (coroutine-name cor) names symbol=?)))
-                  thread-queue)))
-
-  ;; Gracefully ask a thread to die by adding its name to the hitlist
-  (define (ask-to-die name)
-    (set! hitlist (cons name hitlist)))
-
-  (define (start-threads)
-    (let ((cc (current-continuation)))
-      (if cc
-          (begin
-            (set! halt (lambda () (cc #f)))
-            (if (null? thread-queue)
-                (void)
-                (begin
-                  (let ((next-thread (car thread-queue)))
-                    #;(set! thread-queue (cdr thread-queue))
-                    ((coroutine-k next-thread) 'resume)))))
-          (void))))
-
-  (define (thread $ current-note)
-    (let recur (($ $) (current-note current-note))
-      (cond
-        ((and (or
-               (member (coroutine-name (car thread-queue)) hitlist symbol=?)
-               (stream-empty? $))
-              (null? current-note))
-         ;; If we need to die and we're ready to consume a new note, then die.
-         ;; Or, if our stream is empty and we're ready to consume a new note, die.
-         (quit))
-        ((null? current-note)
-         ;; Process a new note
-         (let ((note (stream-first $)))
-           (cond
-             ((list? note)
-              ;; Spin up some subthreads for each substream
-              (define subthreads
-                (for/list ((sub$ note))
-                  (spawn (thunk (thread sub$ null)) #:pos 'front)))
-              ;; An extremely poor-man's version of a thread join.
-              (define (alive? tname)
-                (member tname thread-queue
-                        (lambda (n t) (equal? n (coroutine-name t)))))
-              (define (all-still-alive?)
-                (andmap alive? subthreads))
-              (define (any-still-alive?)
-                (ormap alive? subthreads))
-              ;; As long as all of the subthreads are still alive,
-              ;; we just do nothing. If one dies we exit this loop.
-              (while (all-still-alive?)
-                (yield))
-              ;; Kill all coroutines that we spawned if one dies.
-              (for-each ask-to-die subthreads)
-              ;; We've asked all the threads to terminate, so once all note off
-              ;; events have been emitted, then we can exit this following loop.
-              (while (any-still-alive?)
-                (yield))
-              (recur (stream-rest $) null))
-             ((procedure? note)
-              ;; Play the note and start counting down until it dies
-              (let* ((chn (swap! channel update-channel))
-                     (dur (note chn)))
-                (yield)
-                (recur (stream-rest $) (cons dur chn))))
-             (else (error (format "Got an invalid note! ~a" note))))))
-        ;; Decrement current note and yield
-        (else
+  (define streams empty)
+  (define (seq->midi$ $ ticks track)
+    (define recur (curryr seq->midi$ track))
+    (cond
+      ((stream-empty? $) empty-stream)
+      ((null? current-note)
+       (let ((note (stream-first $)))
          (cond
-           ((note-done? current-note)
-            (displayln (format "Note off... ~a" (cdr current-note)))
-            (recur $ null))
-           (else
-            (yield)
-            (recur $ (update-current-note current-note))))))))
+           ((list? note)
+            (set! streams
+                  (cons (for/list ((st note)
+                                   (trk (in-naturals (add1 track))))
+                          (stream-cons ticks (seq->midi st ticks trk)))))
+            (recur (stream-rest $) ticks track))
+           ((procedure? note)
+            (let*-values (((chn) (swap! channel update-channel))
+                          ((key vel chn delta) (note chn)))
+              (stream-cons (list note vel chn)
+                           (stream-cons delta
+                                        (recur (stream-rest $))))))
+           (else (error (format "Got an invalid note! ~a" note))))))))
 
-  ;;Spawn the root thread.
-  (define root (spawn (thunk (thread bigseq null))))
-  (define ticker
-    (spawn
-     (thunk
-      (define ft #t)
-      (while (member root thread-queue (lambda (n t) (equal? n (coroutine-name t))))
-        (if ft
-            (begin
-              (set! ft #f)
-              (yield))
-            (begin
-              (displayln "Tick.")
-              (yield)))))))
-  (start-threads))
+  (set! streams (list (seq->midi$ bigseq null 0 0)))
+  ;; Do some sort of extraction from the created streams.
+  )
 
 (define > (stream (thunk (displayln "Bumping octave up"))))
 (define < (stream (thunk (displayln "Bumping octave down"))))
@@ -392,7 +277,8 @@
    (play
     (together
      (seq b4 b4)
-     (seq a8 a8 a8 a8)))))
+     (seq a8 a8 a8 a8))
+    (seq b2 b4 b2 b4))))
 #;
 (define doplay
   (thunk
