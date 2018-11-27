@@ -23,7 +23,8 @@
 
 (require (for-syntax syntax/parse racket/syntax
                      (only-in racket thunk*))
-         (rename-in racket (> gt?) (< lt?) (>= gte?) (<= lte?)))
+         (rename-in racket (> gt?) (< lt?) (>= gte?) (<= lte?))
+         "voices.rkt")
 
 ;; You can fit 8 32nd notes in a quarter note.
 (define +ticks-per-quarter+ 8)
@@ -51,18 +52,18 @@
                      ("8." .   ,(dot +eighth+))
                      ("16." .  ,(dot +sixteenth+))))))
 
-(define *octave* (make-parameter #f))
-(define *voice* (make-parameter #f))
+(define current-channel 0)
+(define (update-channel)
+  (let ((new-chan (modulo (add1 current-channel) 16)))
+    (if (= new-chan 10) ;; the midi percussion channel
+        (set! current-channel (add1 new-chan))
+        (set! current-channel new-chan))))
 
-;; The ticker returns the number of ticks to wait until the next note.
-(define *ticker* (make-parameter identity))
+(define *octave* (make-parameter 0))
+(define _voice_ (make-parameter #f))
 
-(define (octave)
-  (let ((o (*octave*)))
-    (if (not o) 0 o)))
-
-(define (voice)
-  (let ((o (*voice*)))
+(define (*voice*)
+  (let ((o (_voice_)))
     (if (not o) 0 o)))
 
 (define-syntax while
@@ -93,29 +94,28 @@
       ((stream-empty? sub$) (infinitize $))
       (else (stream-cons (stream-first sub$) (recur (stream-rest sub$)))))))
 
-(define (stream-take $ n)
-  (cond
-    ((zero? n) '())
-    (else (cons (stream-first $) (stream-take (stream-rest $) (sub1 n))))))
-
 ;; Maps a function over a sequence, accounting for togethered notes
 (define (seqmap func seq)
   (stream-map (lambda (el)
                 (if (list? el)
-                    (map func el)
+                    (map (curry seqmap func) el)
                     (func el)))
               seq))
 
-(define (note-on midi-num note-length channel)
-  (let ((real-note (+ midi-num (* 12 (octave))))
+(define (note-on midi-num note-length channel track)
+  (let ((real-note (+ midi-num (* 12 (*octave*))))
         (duration (note-length->duration note-length)))
-    (displayln (format "Playing note ~a, length: ~a, duration: ~a, octave: ~a, voice: ~a, channel: ~a"
-                       real-note note-length duration (octave) (voice) channel))
-    duration))
+    (displayln (format "Playing note ~a, length: ~a, duration: ~a, octave: ~a, voice: ~a, channel: ~a, track: ~a"
+                       real-note note-length duration (*octave*) (*voice*) channel track))
+    (unless (= channel 10)
+      (update-channel))))
 
-(define (rest-on _ note-length)
-  (displayln "Resting")
-  (note-length->duration note-length))
+(define (rest-on _ note-length channel track)
+  (displayln (format "Resting on channel: ~a, track: ~a" channel track))
+  (note-length->duration note-length)
+  ;; We don't need to update channel...
+  #;(unless (= channel 10)
+    (update-channel)))
 
 (define-syntax punk
   (syntax-parser
@@ -184,10 +184,23 @@
          (let* ((seqs (begin code ...)))
            (apply stream-append seqs))))))
 
-(define-syntax seq
+(define seq stream-append)
+#;(define-syntax seq
   (syntax-parser
     ((_ seq ...)
      #'(stream-append seq ...))))
+
+;; Groan. MIDI designates channel 10 to produce drum sounds rather than
+;; regular voices, with seemingly no way to change this. drumseq is identical
+;; to a regular seq, however it ignores whatever channel is passed to it and
+;; just always plays on channel 10. Don't create any more than 1 drumseq or it will
+;; likely sound like crap.
+(define (drumseq . seqs)
+  (define bigseq (apply stream-append seqs))
+  (seqmap (lambda (n)
+            (lambda (_channel track)
+              (n 10 track)))
+          bigseq))
 
 (define-syntax defseq
   (syntax-parser
@@ -204,17 +217,27 @@
 
 (define (octave+ num . seqs)
   (let ((bigseq (apply stream-append seqs)))
-    (stream-map identity bigseq)))
+    (seqmap (lambda (n)
+              (lambda args
+                (parameterize
+                    ((*octave* (+ (*octave*) num)))
+                  (apply n args))))
+            bigseq)))
 
-;; simple...
+(define (with-voice v . seqs)
+  (let ((bigseq (apply stream-append seqs)))
+    (seqmap (lambda (n)
+              (lambda args
+                (maybe-parameterize
+                 (_voice_ v)
+                 (apply n args))))
+            bigseq)))
+
+;; simple, huh
 (define (together . seqs)
   (stream seqs))
 
 ;; Coroutine stuff
-(define (current-continuation)
-  (call-with-current-continuation
-   (lambda (cc)
-     (cc cc))))
 
 (define-syntax swap!
   (syntax-parser
@@ -224,11 +247,6 @@
          z))))
 
 (define (play . seqs)
-  ;; The current channel
-  (define channel 0)
-  (define (update-channel c)
-    (modulo (add1 c) 16))
-
   ;; The large sequence
   (define bigseq (apply stream-append seqs))
 
@@ -246,6 +264,11 @@
 
   (define (more-threads? tq)
     (gt? (length tq) 1))
+
+  (define (current-continuation)
+    (call-with-current-continuation
+     (lambda (cc)
+       (cc cc))))
 
   (define (spawn thunk #:pos (pos 'back))
     (let ((cc (current-continuation))
@@ -302,28 +325,28 @@
                     ((coroutine-k next-thread) 'resume)))))
           (void))))
 
-  (define (thread $ current-note)
-    (let recur (($ $) (current-note current-note))
+  (define (thread $ track)
+    (let recur (($ $))
       (cond
         ((and (or
                (member (coroutine-name (car thread-queue)) hitlist symbol=?)
-               (stream-empty? $))
-              (null? current-note))
-         ;; If we need to die and we're ready to consume a new note, then die.
-         ;; Or, if our stream is empty and we're ready to consume a new note, die.
+               (stream-empty? $)))
+         ;; If we need to die or, if our stream is empty, die
          (quit))
-        ((null? current-note)
+        (else
          ;; Process a new note
          (let ((note (stream-first $)))
            (cond
              ((list? note)
               ;; Spin up some subthreads for each substream
               (define subthreads
-                (for/list ((sub$ note))
-                  (spawn (thunk (thread sub$ null)) #:pos 'front)))
+                (for/list ((sub$ note)
+                           (tk (in-naturals (add1 track))))
+                  (spawn (thunk (thread sub$ tk)) #:pos 'front)))
               ;; An extremely poor-man's version of a thread join.
               (define (alive? tname)
                 (member tname thread-queue
+                        #;(compose (curry equal? n) coroutine-name)
                         (lambda (n t) (equal? n (coroutine-name t)))))
               (define (all-still-alive?)
                 (andmap alive? subthreads))
@@ -339,45 +362,23 @@
               ;; events have been emitted, then we can exit this following loop.
               (while (any-still-alive?)
                 (yield))
-              (recur (stream-rest $) null))
+              (recur (stream-rest $)))
              ((procedure? note)
               ;; Play the note and start counting down until it dies
-              (let* ((chn (swap! channel update-channel))
-                     (dur (note chn)))
+              (let* ((dur (note current-channel track)))
                 (yield)
-                (recur (stream-rest $) (cons dur chn))))
-             (else (error (format "Got an invalid note! ~a" note))))))
-        ;; Decrement current note and yield
-        (else
-         (cond
-           ((note-done? current-note)
-            (displayln (format "Note off... ~a" (cdr current-note)))
-            (recur $ null))
-           (else
-            (yield)
-            (recur $ (update-current-note current-note))))))))
+                (recur (stream-rest $))))
+             (else (error (format "Got an invalid note! ~a" note)))))))))
 
   ;;Spawn the root thread.
-  (define root (spawn (thunk (thread bigseq null))))
-  (define ticker
-    (spawn
-     (thunk
-      (define ft #t)
-      (while (member root thread-queue (lambda (n t) (equal? n (coroutine-name t))))
-        (if ft
-            (begin
-              (set! ft #f)
-              (yield))
-            (begin
-              (displayln "Tick.")
-              (yield)))))))
+  (define root (spawn (thunk (thread bigseq 0))))
   (start-threads))
 
 (define > (stream (thunk (displayln "Bumping octave up"))))
 (define < (stream (thunk (displayln "Bumping octave down"))))
 
 (defseq bassline
-  c2)
+  c4 r4)
 
 (defun random-phrase (num-notes)
   (let* ((ls (list a b c d e f g))
@@ -391,8 +392,11 @@
   (thunk
    (play
     (together
-     (seq b4 b4)
-     (seq a8 a8 a8 a8)))))
+     (drumseq a a a a16)
+     (with-voice overdriven-guitar
+       (loop 0 bassline))
+     #;(octave+ 1 (octave+ 3 (seq b4 b4)))
+     #;(seq a8 a8 a8 a8)))))
 #;
 (define doplay
   (thunk
