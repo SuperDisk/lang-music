@@ -64,7 +64,7 @@
         (set! current-channel (add1 new-chan))
         (set! current-channel new-chan))))
 
-(define *octave* (make-parameter 0))
+(define *octave* (make-parameter 3))
 (define _voice_ (make-parameter #f))
 (define (*voice*)
   (let ((o (_voice_)))
@@ -87,11 +87,6 @@
              (parameterize ((id val)) (c))
              (c))))))
 
-(define funcall (curryr apply empty))
-
-(define (repeat num ls)
-  (build-list num (const ls)))
-
 ;; Makes a stream loop forever
 (define (infinitize $)
   (let recur ((sub$ $))
@@ -107,25 +102,25 @@
                     (func el)))
               seq))
 
+;; `note-on` and `rest-on` produce lists of "events" and numbers that will become
+;; midi events and delta times. They can produce multiple numbers in a row
+;; as these will be added together later on in `play`.
 (define (note-on midi-num note-length channel track)
   (let ((real-note (+ midi-num (* 12 (*octave*))))
         (duration (note-length->duration note-length)))
     (displayln (format "Playing note ~a, length: ~a, duration: ~a, octave: ~a, voice: ~a, channel: ~a, track: ~a"
                        real-note note-length duration (*octave*) (*voice*) channel track))
-    (*trackdata* (hash-update (*trackdata*) track
-                              (lambda (trk-data)
-                                `(0 (off ,real-note ,channel) ,duration (on ,real-note ,channel ,(*voice*)) . ,trk-data))))
+    (define retval
+      `(0 (off ,real-note ,channel) ,duration (on ,real-note ,channel ,(*voice*))))
     (unless (= channel +drum-track+)
-      (update-channel))))
+      (update-channel))
+
+    retval))
 
 (define (rest-on _midi-num note-length _channel track)
   (define duration (note-length->duration note-length))
   (displayln (format "Resting on track: ~a" track))
-  (*trackdata* (hash-update (*trackdata*) track
-                            (lambda (trk-data)
-                              ;; There's a pass later that combines all numbers that are next to each other.
-                              `(,duration . ,trk-data))))
-  (note-length->duration note-length))
+  (list duration))
 
 (define-for-syntax (make-note-symbol s1 s2)
   (string->symbol
@@ -157,6 +152,7 @@
        #`(begin
            #,@defs)))))
 
+;; Notes for playback
 (define-note-divisions g# 32)
 (define-note-divisions g 31)
 (define-note-divisions f# 30)
@@ -169,8 +165,20 @@
 (define-note-divisions b 23)
 (define-note-divisions a# 22)
 (define-note-divisions a 21)
+
 ;; Rest
 (define-note-divisions r #f rest-on)
+(define-note-divisions p #f rest-on) ;; BASIC had this.
+
+;; Setting the octave
+(define o0 (thunk* (*octave* 0) empty))
+(define o1 (thunk* (*octave* 1) empty))
+(define o2 (thunk* (*octave* 2) empty))
+(define o3 (thunk* (*octave* 3) empty))
+(define o4 (thunk* (*octave* 4) empty))
+(define o5 (thunk* (*octave* 5) empty))
+
+(provide o0 o1 o2 o3 o4 o5)
 
 (define-syntax defun
   (syntax-parser
@@ -195,9 +203,9 @@
 
 (define-syntax defseq
   (syntax-parser
-    ((_ name seq ...)
+    ((_ name s ...)
      #`(define name
-         (stream-append seq ...)))))
+         (seq s ...)))))
 
 (define (loop num . seqs)
   (let ((bigseq (apply stream-append seqs)))
@@ -207,11 +215,19 @@
       (else (error "Can't loop with a negative number!")))))
 
 (define (octave+ num . seqs)
+  (define (bump-up evt)
+    (match evt
+      (`(off ,note ,chn)
+       `(off ,(+ note (* num 12)) ,chn))
+      (`(on ,note ,chn ,voice)
+       `(on ,(+ note (* num 12)) ,chn ,voice))
+      (x x)))
+
   (let ((bigseq (apply stream-append seqs)))
     (seqmap (lambda (n)
               (lambda args
-                (parameterize ((*octave* (+ (*octave*) num)))
-                  (apply n args))))
+                (define note-out (apply n args))
+                (map bump-up note-out)))
             bigseq)))
 
 (define (with-voice v . seqs)
@@ -223,18 +239,12 @@
                  (apply n args))))
             bigseq)))
 
+(define (repeat num ls)
+  (build-list num (const ls)))
+
 ;; simple, huh
 (define (together . seqs)
   (stream seqs))
-
-;; Coroutine stuff
-
-(define-syntax swap!
-  (syntax-parser
-    ((_ x:id func args ...)
-     #'(let ((z (func x args ...)))
-         (set! x z)
-         z))))
 
 (define (play . seqs)
   (parameterize ((*trackdata*
@@ -242,12 +252,6 @@
                     (values i '(0)))))
     ;; The large sequence
     (define bigseq (apply stream-append seqs))
-
-    (define (update-current-note cn)
-      (cons (sub1 (car cn)) (cdr cn)))
-
-    (define (note-done? n)
-      (= (car n) 0))
 
     ;; Coroutine queue
     (define-struct coroutine (name k) #:transparent)
@@ -332,10 +336,15 @@
              (cond
                ((list? note)
                 ;; Spin up some subthreads for each substream
-                (define subthreads
+                (define subthreads-alist
                   (for/list ((sub$ note)
                              (tk (in-naturals (add1 track))))
-                    (spawn (thunk (thread sub$ tk)) #:pos 'front)))
+                    (cons
+                     (spawn (thunk (parameterize ((*octave* (*octave*)))
+                                     (thread sub$ tk)))
+                            #:pos 'front)
+                     tk)))
+                (define subthreads (map car subthreads-alist))
                 ;; An extremely poor-man's version of a thread join.
                 (define (alive? tname)
                   (member tname thread-queue
@@ -348,25 +357,39 @@
                 ;; we just do nothing. If one dies we exit this loop.
                 (while (all-still-alive?)
                   (yield))
-                ;; Kill all coroutines that we spawned if one dies.
-                (for-each ask-to-die subthreads)
-                ;; We've asked all the threads to terminate, so once all note off
-                ;; events have been emitted, then we can exit this following loop.
+                (define get-time (compose (curry apply +) (curry filter number?)))
+                (define (thread->data th)
+                  (hash-ref (*trackdata*)
+                            (cdr (assv th subthreads-alist))))
+                ;; One has died. Find how much time it spent and start killing
+                ;; once that count or greater appears in the others.
+                (define first-dead
+                  (first (filter (negate alive?) subthreads)))
+                (define first-dead-data (thread->data first-dead))
+                (define time-spent (get-time first-dead-data))
                 (while (any-still-alive?)
+                  (for ((th subthreads)
+                        #:when (not (member th hitlist)))
+                    (define data (thread->data th))
+                    (define generated-time (get-time data))
+                    (when (>= generated-time time-spent)
+                      (ask-to-die th)))
                   (yield))
                 ;; They're finally all dead. They all theoretically should have
-                ;; emitted the same number of notes (TODO: fix this) so just
+                ;; emitted the same number of time (TODO: fix this) so just
                 ;; see how many that was and then emit a rest that lasts that long.
-                (define first-subtrack (add1 track))
-                (define subtrack-data (hash-ref (*trackdata*) first-subtrack))
-                (define rest-duration (apply + (filter number? subtrack-data)))
+                (define biggest-time
+                  (apply max (map (compose get-time thread->data) subthreads)))
                 (*trackdata* (hash-update (*trackdata*) track
                                             (lambda (trk-data)
-                                              `(,rest-duration . ,trk-data))))
+                                              `(,biggest-time . ,trk-data))))
                 (recur (stream-rest $)))
                ((procedure? note)
-                ;; Play the note and start counting down until it dies
-                (let* ((dur (note current-channel track)))
+                ;; Play the note, yield to other threads, then continue processing
+                (let ((note-out (note current-channel track)))
+                  (*trackdata* (hash-update (*trackdata*)
+                                            track
+                                            (curry append note-out)))
                   (yield)
                   (recur (stream-rest $))))
                (else (error (format "Got an invalid note! ~a" note)))))))))
@@ -382,12 +405,12 @@
                    (cons n r)))
              empty (cons 'end-of-track trk)))
 
-    (pretty-print (*trackdata*))
+    #;(pretty-print (*trackdata*))
     (define final-track-data
       (for/hash (((k v) (in-hash (*trackdata*)))
                  #:when (not (equal? v '(0))))
         (values k (finalize-track v) #;(cons 'end-of-track (reverse (cdr v))))))
-    (pretty-print final-track-data)
+    #;(pretty-print final-track-data)
     'yowza!
     (dump-to-midi "output.mid" final-track-data)))
 
@@ -403,22 +426,20 @@
    (bin 6 4) ;; Always 6 for MIDI 1.0
    (bin 1 2) ;; What type of MIDI (we output Format 1)
    (bin numtracks 2) ;; Number of tracks
-   (sbin +ticks-per-quarter+ 2) ;; How many ticks:quarter
-   ))
+   (sbin +ticks-per-quarter+ 2)))
 
 ;; Ported from midi.lisp
 ;; seems like Racket's bit twiddling features are inspired
-;; by CL's!
-(define (write-variable-length-quantity quantity (termination 0))
-  (when (gt? quantity 127)
-    (write-variable-length-quantity
-     (arithmetic-shift quantity -7) #x80))
-  (write-bytes (bytes
-                (bitwise-ior
-                 (bitwise-and quantity #x7f)
-                 termination))))
-
+;; by CL's
 (define (vlq n)
+  (define (write-variable-length-quantity quantity (termination 0))
+    (when (gt? quantity 127)
+      (write-variable-length-quantity
+       (arithmetic-shift quantity -7) #x80))
+    (write-bytes (bytes
+                  (bitwise-ior
+                   (bitwise-and quantity #x7f)
+                   termination))))
   (with-output-to-bytes
     (thunk (write-variable-length-quantity n))))
 
@@ -466,37 +487,8 @@
    (bin (bytes-length track-data) 4)
    track-data))
 
-(define (dump-first-track)
-  #;(define settempo
-    (bytes-append
-     (bytes #xFF
-            #x51
-            #x03)
-     (bin 500000 3)))
-  #;(define timesig
-    (bytes-append
-     (bytes #xFF
-            #x58
-            #x04
-
-            4 ;; numerator
-            2 ;; denominator^2
-            24 ;; clocks???
-            8 ;; 1/32 notes per 24 midi clocks (Wtf)
-            )))
-  (define final-body
-    (bytes-append
-     #;(vlq 0)
-     #;settempo
-     #;(vlq 0)
-     #;timesig))
-  (bytes-append
-   #"MTrk"
-   (bin (bytes-length final-body) 4)
-   final-body))
-
 (define (dump-to-midi path trackdata)
-  (pretty-print trackdata)
+  #;(pretty-print trackdata)
   (define non-empty-tracks
     (for/list (((n tk) (in-hash trackdata))
                #:when (not (empty? tk)))
@@ -510,40 +502,8 @@
      (for ((dat non-empty-tracks))
        (write-bytes (dump-track dat))))))
 
-(define > (stream (thunk (displayln "Bumping octave up"))))
-(define < (stream (thunk (displayln "Bumping octave down"))))
+(define > (stream (thunk* (*octave* (add1 (*octave*))) empty)))
+(define < (stream (thunk* (*octave* (sub1 (*octave*))) empty)))
 
-(defseq bassline
-  c4 d#4)
-
-(defun random-phrase (num-notes)
-  (let* ((ls (list a b c d e f g))
-         (len (length ls)))
-    (build-list num-notes (thunk* (list-ref ls (random len))))))
-
-(defseq phrase1
-  c4 f4)
-
-(define doplay
-  (thunk
-   (play
-    (octave+ 3
-             (loop 3 c8 d#8 f8 g8))
-    #;(together
-     (seq a b c)
-     (seq d e f)))
-   #;(play
-    (together
-     (loop 3 phrase1)
-     (loop 3 (octave+ 2 bassline))))))
-(doplay)
-
-#;(define doplay
-  (thunk
-   (play
-    (together
-     (loop 2 phrase1)
-     (loop 0 bassline))
-    (together
-     (loop 2 (octave+ 1 phrase1))
-     (loop 0 (octave+ 1 bassline))))))
+(provide defun seq drumseq defseq loop octave+ with-voice repeat
+         together play > <)
