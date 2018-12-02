@@ -184,7 +184,7 @@
   (syntax-parser
     ((_ name (id ...) code ...)
      #'(define (name id ...)
-         (let* ((seqs (begin code ...)))
+         (let* ((seqs (let () code ...)))
            (apply stream-append seqs))))))
 
 (define seq stream-append)
@@ -232,6 +232,20 @@
 
 (define (octave+ num . seqs)
   (apply semitone+ (* 12 num) seqs))
+
+;; doesn't work that well...
+(define (force-length num . seqs)
+  (define (bump-up evt)
+    (match evt
+      (x #:when (number? x) num)
+      (x x)))
+
+  (let ((bigseq (apply stream-append seqs)))
+    (seqmap (lambda (n)
+              (lambda args
+                (define note-out (apply n args))
+                (map bump-up note-out)))
+            bigseq)))
 
 (define (with-voice v . seqs)
   (let ((bigseq (apply stream-append seqs)))
@@ -523,6 +537,6 @@
 (define > (stream (thunk* (*octave* (add1 (*octave*))) empty)))
 (define < (stream (thunk* (*octave* (sub1 (*octave*))) empty)))
 
-(provide defun seq drumseq defseq loop octave+ with-voice
-         together play > < dump-to-midi
+(provide defun seq drumseq defseq loop octave+ semitone+ with-voice
+         together play > < lt? gt? dump-to-midi #;force-length
          (all-from-out "voices.rkt"))

@@ -1,6 +1,6 @@
 #lang racket
 
-(require "langmusic.rkt")
+(require "../langmusic.rkt")
 
 (defseq arpeggio24
   e32
@@ -81,6 +81,7 @@
   d4 d8 d16 e8 c8. d r)
 
 (defun fact (n)
+  (define x 1)
   (let ((notes empty)
         (chord (list c16 d#16 f16 g16)))
     (let recur ((n n))
