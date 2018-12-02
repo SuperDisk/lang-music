@@ -214,13 +214,13 @@
       ((positive? num) (apply stream-append (repeat num bigseq)))
       (else (error "Can't loop with a negative number!")))))
 
-(define (octave+ num . seqs)
+(define (semitone+ num . seqs)
   (define (bump-up evt)
     (match evt
       (`(off ,note ,chn)
-       `(off ,(+ note (* num 12)) ,chn))
+       `(off ,(+ note num) ,chn))
       (`(on ,note ,chn ,voice)
-       `(on ,(+ note (* num 12)) ,chn ,voice))
+       `(on ,(+ note num) ,chn ,voice))
       (x x)))
 
   (let ((bigseq (apply stream-append seqs)))
@@ -229,6 +229,9 @@
                 (define note-out (apply n args))
                 (map bump-up note-out)))
             bigseq)))
+
+(define (octave+ num . seqs)
+  (apply semitone+ (* 12 num) seqs))
 
 (define (with-voice v . seqs)
   (let ((bigseq (apply stream-append seqs)))
@@ -335,10 +338,21 @@
            (let ((note (stream-first $)))
              (cond
                ((list? note)
+                (define get-time (compose (curry apply +) (curry filter number?)))
+
                 ;; Spin up some subthreads for each substream
+                (define sleep-before (get-time (hash-ref (*trackdata*) track)))
+
                 (define subthreads-alist
                   (for/list ((sub$ note)
                              (tk (in-naturals (add1 track))))
+                    ;; Add sleep to the new tracks until they reach our amount
+                    (define already-slept (get-time (hash-ref (*trackdata*) tk)))
+                    (*trackdata* (hash-update (*trackdata*) tk
+                                              (lambda (trk-data)
+                                                `(,(- sleep-before already-slept)
+                                                  .
+                                                  ,trk-data))))
                     (cons
                      (spawn (thunk (parameterize ((*octave* (*octave*)))
                                      (thread sub$ tk)))
@@ -357,7 +371,6 @@
                 ;; we just do nothing. If one dies we exit this loop.
                 (while (all-still-alive?)
                   (yield))
-                (define get-time (compose (curry apply +) (curry filter number?)))
                 (define (thread->data th)
                   (hash-ref (*trackdata*)
                             (cdr (assv th subthreads-alist))))
@@ -410,9 +423,10 @@
       (for/hash (((k v) (in-hash (*trackdata*)))
                  #:when (not (equal? v '(0))))
         (values k (finalize-track v) #;(cons 'end-of-track (reverse (cdr v))))))
-    #;(pretty-print final-track-data)
-    'yowza!
-    (dump-to-midi "output.mid" final-track-data)))
+    ;; (pretty-print final-track-data)
+    ;; 'yowza!
+    #;(dump-to-midi "output.mid" final-track-data)
+    final-track-data))
 
 (define (bin num size)
   (integer->bytes num size #f))
@@ -467,6 +481,10 @@
         (match event
           (`(on ,midi-num ,channel ,voice)
            (bytes-append
+            ;; do the program change every time (bad!)
+            (statusbyte #xC channel)
+            (bytes voice)
+            (vlq 0)
             (statusbyte #x9 channel)
             (bytes midi-num)
             (bytes 40) ;; Do this for non vel-sensitive???
@@ -505,5 +523,6 @@
 (define > (stream (thunk* (*octave* (add1 (*octave*))) empty)))
 (define < (stream (thunk* (*octave* (sub1 (*octave*))) empty)))
 
-(provide defun seq drumseq defseq loop octave+ with-voice repeat
-         together play > <)
+(provide defun seq drumseq defseq loop octave+ with-voice
+         together play > < dump-to-midi
+         (all-from-out "voices.rkt"))
