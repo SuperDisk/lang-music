@@ -72,7 +72,7 @@
   f#8. > f#8. < b8 > c#8.
   e8 e16 < g#8 a8. >
   a8. < b16 > c16
-  c#8 e8. < b16 > c#8 )
+  c#8 e8. < b16 > c#8 <)
 
 (defseq lead1
   r4 f4 e4 c8. d4 r4 g16 g#16 a8 > a8. < g8)
@@ -97,18 +97,7 @@
 
 (dump-to-midi
  "output.mid"
- (play
-  a
-  b
-  c
-  (loop 5 (fact 5))
-  d
-  e
-  f
-  #;(together
-
-   #;(seq lead1 lead2 lead1 lead2)
-   #;(seq
-    (myseq r)
-    (loop 2 bass24)
-    (octave+ 1 (with-voice rock-organ (loop 2 bass24)))))))
+ (play < (loop 4
+             (with-voice
+                 acoustic-bass
+               bass24))))
