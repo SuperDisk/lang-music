@@ -1,6 +1,4 @@
-#lang racket
-
-(require "../langmusic.rkt")
+#lang music
 
 (defseq game
   > e

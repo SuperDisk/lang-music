@@ -109,7 +109,7 @@
   (let ((real-note (+ midi-num (* 12 (*octave*))))
         (duration (note-length->duration note-length)))
     #;(displayln (format "Playing note ~a, length: ~a, duration: ~a, octave: ~a, voice: ~a, channel: ~a, track: ~a"
-                       real-note note-length duration (*octave*) (*voice*) channel track))
+                         real-note note-length duration (*octave*) (*voice*) channel track))
     (define retval
       `(0 (off ,real-note ,channel) ,duration (on ,real-note ,channel ,(*voice*))))
     (unless (= channel +drum-track+)
@@ -390,7 +390,7 @@
                 ;; As long as all of the subthreads are still alive,
                 ;; we just do nothing. If one dies we exit this loop.
                 (while (all-still-alive?)
-                  (yield))
+                       (yield))
                 (define (thread->data th)
                   (hash-ref (*trackdata*)
                             (cdr (assv th subthreads-alist))))
@@ -401,21 +401,21 @@
                 (define first-dead-data (thread->data first-dead))
                 (define time-spent (get-time first-dead-data))
                 (while (any-still-alive?)
-                  (for ((th subthreads)
-                        #:when (not (member th hitlist)))
-                    (define data (thread->data th))
-                    (define generated-time (get-time data))
-                    (when (>= generated-time time-spent)
-                      (ask-to-die th)))
-                  (yield))
+                       (for ((th subthreads)
+                             #:when (not (member th hitlist)))
+                         (define data (thread->data th))
+                         (define generated-time (get-time data))
+                         (when (>= generated-time time-spent)
+                           (ask-to-die th)))
+                       (yield))
                 ;; They're finally all dead. They all theoretically should have
                 ;; emitted the same number of time (TODO: fix this) so just
                 ;; see how many that was and then emit a rest that lasts that long.
                 (define biggest-time
                   (apply max (map (compose get-time thread->data) subthreads)))
                 (*trackdata* (hash-update (*trackdata*) track
-                                            (lambda (trk-data)
-                                              `(,biggest-time . ,trk-data))))
+                                          (lambda (trk-data)
+                                            `(,biggest-time . ,trk-data))))
                 (recur (stream-rest $)))
                ((procedure? note)
                 ;; Play the note, yield to other threads, then continue processing
@@ -543,6 +543,8 @@
 (define > (stream (thunk* (*octave* (add1 (*octave*))) empty)))
 (define < (stream (thunk* (*octave* (sub1 (*octave*))) empty)))
 
-(provide defun seq drumseq defseq loop octave+ semitone+ with-voice
-         together play > < lt? gt? dump-to-midi #;force-length
-         (all-from-out "voices.rkt"))
+(provide
+ (all-from-out racket)
+ defun seq drumseq defseq loop octave+ semitone+ with-voice
+ together play > < lt? gt? dump-to-midi #;force-length
+ (all-from-out "voices.rkt"))
