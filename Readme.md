@@ -14,7 +14,7 @@ Here's the "docs." I'll probably eventually make some proper Scribble docs but h
 
     (defun <name> (<arg> ...) <seq> ...)
     
-Defines a musical function. Return a list of sequences. Any call to a function defined with `defun` will be considered a sequnce.
+Defines a musical function. Return a list of sequences. Any call to a function defined with `defun` will be considered a sequence.
     
     (seq <seq> ...)
     
@@ -58,6 +58,8 @@ Some other niceties:
 
 # Example
 Here's an example tune programmed by Michael, the intro to _Sweet Child 'O Mine_.
+
+    #lang music
 
     (defseq bass2a
       < < d4. > f#4. f#8 g8 
