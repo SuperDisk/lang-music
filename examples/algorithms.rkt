@@ -16,6 +16,19 @@
 (define f#-major (list f#8 g#8 a#8 b8 c#8 d#8 f8 f#8))
 (define g#-major (list g#8 a#8 c8 c#8 d#8 f8 g8 g#8))
 (define a#-major (list a#8 c8 d8 d#8 f8 g8 a8 a#8))
+(define bigscale (append c-major 
+                         d-major 
+                         e-major 
+                         f-major 
+                         g-major 
+                         a-major 
+                         b-major 
+                         c#-major
+                         d#-major
+                         f#-major
+                         g#-major
+                         a#-major
+                         ))
 
 (define *notes* (make-parameter #f))
 (define *nts* (make-parameter #f))
@@ -31,8 +44,8 @@
 
 (define (fib n)
   (cond
-    ((= n 0) 1)
-    ((= n 1) 1)
+    ((= n 0) (note 1))
+    ((= n 1) (note 1))
     (else
      (note
       (+ (fib (sub1 n)) (fib (- n 2)))))))
@@ -42,7 +55,7 @@
     ((zero? m) (add1 n))
     ((zero? n) (note (ack (sub1 m) 1)))
     (else (note (ack (sub1 m)
-                      (note (ack m (sub1 n))))))))
+                     (note (ack m (sub1 n))))))))
 
 (define pidig
   (generator ()
@@ -59,15 +72,24 @@
 (define (do-pi)
   (for ((_ (in-range 30)))
     (note (pidig))))
+#;
+(begin
+(dump-to-midi
+ "algos-together.mid"
+ (play
+  (together
+   (with-voice harpsichord (musicify (thunk (ack 2 3)) d#-major))
+   (with-voice rock-organ (musicify (thunk (fib 8)) d-major))
+   (with-voice harmonica (musicify do-pi g-major)))))
 
 (dump-to-midi
  "ackermann.mid"
- (play > (musicify (thunk (ack 2 3)) c-major)))
+ (play > (musicify (thunk (ack 2 3)) d#-major)))
 
 (dump-to-midi
  "fibonacci.mid"
- (play > (musicify (thunk (fib 8)) c-major)))
+ (play > (musicify (thunk (fib 8)) c-major))))
 
 (dump-to-midi
  "pi.mid"
- (play > (musicify do-pi c-major)))
+ (play > (musicify do-pi bigscale)))

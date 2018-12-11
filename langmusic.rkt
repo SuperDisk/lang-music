@@ -108,7 +108,7 @@
 (define (note-on midi-num note-length channel track)
   (let ((real-note (+ midi-num (* 12 (*octave*))))
         (duration (note-length->duration note-length)))
-    (displayln (format "Playing note ~a, length: ~a, duration: ~a, octave: ~a, voice: ~a, channel: ~a, track: ~a"
+    #;(displayln (format "Playing note ~a, length: ~a, duration: ~a, octave: ~a, voice: ~a, channel: ~a, track: ~a"
                        real-note note-length duration (*octave*) (*voice*) channel track))
     (define retval
       `(0 (off ,real-note ,channel) ,duration (on ,real-note ,channel ,(*voice*))))
@@ -230,8 +230,14 @@
                 (map bump-up note-out)))
             bigseq)))
 
+(define (semitone- num . seqs)
+  (apply semitone+ (- num) seqs))
+
 (define (octave+ num . seqs)
   (apply semitone+ (* 12 num) seqs))
+
+(define (octave- num . seqs)
+  (apply octave+ (- num) seqs))
 
 ;; doesn't work that well...
 (define (force-length num . seqs)
