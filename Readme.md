@@ -1,6 +1,6 @@
 # #lang music
 
-is a project that Michael Gunantra and I did for IU's C424 Advanced Functional Programming class. It's a music notation language inspired by MML, but instead of manipulating and concatenating strings, it's a structured language with full support for manipulating notes and bars.
+is a project that Michael Gunantra and I did for IU's P424 Advanced Functional Programming class. It's a music notation language inspired by MML, but instead of manipulating and concatenating strings, it's a structured language with full support for manipulating notes and bars.
 
 It was done in Racket and outputs MIDI data. The playback routine is still a little buggy but it's a fun prototype to play with nonetheless.
 
