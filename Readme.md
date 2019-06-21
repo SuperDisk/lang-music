@@ -60,6 +60,33 @@ Some other niceties:
 Here's an example tune programmed by Michael, the intro to _Sweet Child 'O Mine_.
 
     #lang music
+    
+    (defseq lead1
+      > r8 d8 a8 < g8 > g8 a8 f#8 a8 <)
+
+    (defseq lead2
+      d8 > d8 a8 < g8 > g8 a8 f#8 a8 <)
+
+    (defseq lead3
+      e8 > d8 a8 < g8 > g8 a8 f#8 a8 <)
+
+    (defseq lead4
+      g8 > d8 a8 < g8 > g8 a8 f#8 a8 <)
+
+    (defseq lead5
+      > e8 a8 d8 a8 e8 a8 f#8 a8
+      g8 a8 f#8 a8 e8 a8 d4 <)
+
+
+    (defseq bass1
+      d
+      d
+      e
+      e
+      g
+      g
+      d
+      d2. r8 < <  r32 d32 f#32 > a32 >)
 
     (defseq bass2a
       < < d4. > f#4. f#8 g8 
